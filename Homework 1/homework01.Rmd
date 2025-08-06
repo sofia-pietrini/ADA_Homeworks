@@ -1,0 +1,259 @@
+---
+title: 'Statistics for Data Science, Homework #1'
+author: "Sofia Pietrini, 258112"
+date: "02/04/2025"
+output:
+  pdf_document: default
+  word_document: default
+geometry: left=2cm,right=2cm,top=1cm,bottom=1.5cm
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,
+                      message=FALSE,
+                      tidy.opts=list(width.cutoff = 80),
+                      tidy = TRUE)
+```
+
+## Introduction
+
+The data analyzed in this homework comes from a cardiovascular study conducted in the US, focused on investigating the possible risk factors associated to the development of coronary heart disease within 10 years. In particular, the risk factors available in the data are: the patients' sex (`sex`), age (`age`), education level (`education`, coded as 1: no high school degree, 2: high school graduate, 3: college graduate, 4: post-college), current smoking status (`smoker`), number of cigarettes per day (`cpd`, continuous), previous occurrence of strokes (`stroke`) or hypertension (`HTN`), presence of diabetes (`diabetes`), cholesterol levels (`chol`, continuous), diastolic blood pressure (`DBP`, continuous), body mass index (`BMI`, continuous), and heart rate (`HR`, continuous). The variable `CHD` records whether the patient developed CHD in the next 10 years or not.
+
+## Loading data set, data exploration and pre-processing
+```{r, include=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(ISLR2)
+library(class)
+library(caret)
+library(ggplot2)
+
+```
+The libraries needed for the study are: `tidyverse `, `tidymodels`, `ISLR2`, `class`, and `caret`. 
+```{r}
+dataf <- read.csv("chd.csv")
+dim(dataf)
+```
+
+Since the data set is composed of 4238 observations, it is useful to view it as a tibble, which truncates automatically the output and can give us insights on the datatype of each column.
+
+```{r}
+as_tibble(dataf)
+```
+
+It is clearly visible how the two non-numerical variables, `CHD` and `sex`, are char variables, whereas the numerical ones are almost all integer, except `DBP` and `BMI` which are double variables. The response variable (`CHD`) is a categorical variable that can take only two labels: *"Yes"* if the patient developed CHD in the past 10 years, *"No"* otherwise. Consequently, `CHD` was transformed into a factor, as well as the other char variable `sex`, with the command `dataf$variable <- factor(dataf$variable)`.\
+Another key feature of the data set is the prevalence of binary variables (`smoker`, `stroke`, `HTN` and `diabetes`) and one ordinal variable (`education`). These were, also, transformed into factors to facilitate the analysis. \
+These transformations help us to have a better understanding of the data we are working with as well as the overall characteristics of the patients. It, also, highlighted the imbalance of the data set with respect to the response variable `CHD`, since we can see from the summary that, out of the 4238 observations, 3594 (85%) did not develop CHD in the next ten years, while 644 (15%) did.
+
+```{r, include=FALSE}
+dataf$sex <- factor(dataf$sex)
+dataf$CHD <- factor(dataf$CHD)
+dataf$education <- factor(dataf$education)
+dataf$smoker <- factor(dataf$smoker)
+dataf$stroke <- factor(dataf$stroke)
+dataf$HTN <- factor(dataf$HTN)
+dataf$diabetes <- factor(dataf$diabetes)
+```
+
+```{r}
+summary(dataf)
+```
+
+Another takeaway from the summary is the presence of NA's. Given the presence of so many binary and ordinal variables and the wish to give coherence to the method, we choose to omit all of them, instead of substituting those present in the continuous predictors' columns with the corresponding variable mean.
+
+```{r}
+dataf <- na.omit(dataf)
+dim(dataf)
+```
+
+By omitting all the NA's, we loose 199 observations, corresponding to 4.6% of the data set.
+
+```{r,  fig.width=7, fig.height=5}
+#Visualization of the discriminative power of continuous predictors
+predictors <- c('age', 'cpd', 'chol', 'DBP', 'BMI', 'HR')
+response <- 'CHD'
+colors <- c("#1A85FF", "#D41159")
+# Create a function to plot boxplots for all continuous predictors
+plot_boxplots <- function(data, predictors, response) {
+    par(mfrow = c(2, 3))  # Arrange plots in a 2x3 grid
+    for (predictor in predictors) {
+        boxplot(data[[predictor]] ~ data[[response]], 
+                main = paste("Boxplot of", predictor, "by", response), 
+                xlab = response, 
+                ylab = predictor,
+                col = colors)
+    }
+    par(mfrow = c(1, 1))  # Reset layout to default
+}
+plot_boxplots(dataf, predictors,response)
+
+```
+
+The boxplots reveal both the distribution of continuous variables and their discriminative power. `age`, `DBP`, and `BMI` emerge as potentially significant predictors, with `chol` showing weaker association. \
+For categorical variables, proportional barplots better illustrate relationships with `CHD`.
+
+```{r,  fig.width=7, fig.height=4}
+# Define categorical variables
+predictors <- c("sex", "education", "smoker", "diabetes", "HTN", "stroke")
+response <- 'CHD'
+colors <- c("#D41159", "#1A85FF")
+
+# Create a function to plot barplots for all categorical predictors
+plot_barplots <- function(data, predictors, response) {
+    par(mfrow = c(2, 3))  # Arrange plots in a 2x3 grid
+    for (predictor in predictors) {
+      freq_table <- table(data[[predictor]], data[[response]])
+      freq_table <- freq_table[, rev(colnames(freq_table))] #invert the order of the columns
+      prop_table <- prop.table(freq_table, margin = 1) 
+      #convert into proportion, to scale the columns
+        barplot(t(prop_table), width = 1,
+                main = paste("Barplot of", predictor, "by", response), 
+                xlab = response, 
+                ylab = predictor,
+                col = colors)
+    legend("topright", legend = rev(levels(as.factor(data[[response]]))), fill = colors, title = response, bg = "white")
+    }
+    par(mfrow = c(1, 1))  # Reset layout to default
+}
+plot_barplots(dataf, predictors,response)
+
+```
+
+All the categorical predictors, with the exception of `smoker`, seem to have a certain degree of discriminative power.
+
+# Split the data into training and test sets
+
+As previously illustrated, the given data set present a slightly imbalance with respect to the response variable `CHD`, with the label "Yes" being observed only in 15% of the total observations. Given the class imbalance, the aim in splitting the data into training and test set was to maintain the same imbalance with respect to the outcome variable. For this purpose, we used the dedicated function `createDataPartition(labels, p=train_size)` from the library `caret`. The function was tested using different values (0.5, 0.7, 0.75 and 0.8) for the parameter p, which is a number between 0 and 1 representing the percentage of data used for training. All the values listed before resulted in the same, or significantly similar, class imbalance, so the choice made was to do a 70-30 split.
+
+```{r}
+set.seed(1)  # For reproducibility
+# Get a vector of length 0.7*n of random indices 
+test <- createDataPartition(dataf$CHD, p = 0.7, list = FALSE) 
+#Split data into training and test set
+dataf_tr <- dataf[-test, ] 
+dataf_ts<- dataf[test, ]
+#Get CHD for test set
+CHD_test <- dataf_ts$CHD #Returns a factor with 2 levels
+#Transform the factor data into labels for future operations
+CHD_test <- as.character(CHD_test)
+
+# Check the distribution of CHD in training and test sets
+prop.table(table(dataf_tr$CHD))
+prop.table(table(dataf_ts$CHD))
+```
+
+# Fit GLM model
+
+In this section we are going to fit the following GLM model: \begin{equation*}
+    \mbox{logit}(\mbox{E(CHD)}) = \beta_0 + \beta_1 \mbox{sex} + \beta_2 \mbox{age} + \beta_3 \mbox{education} + \ldots + \beta_{12} \mbox{HR}
+    \end{equation*}
+The model is logistic regression, which estimates the log-odds of developing CHD based on the predictors available in our data set.\
+Each coefficient $\beta_{i}$ will represent the log-odds change associated with a one-unit increase in that predictor while holding all other variables constant.
+
+```{r}
+glm.fit <- glm(CHD~sex+age+education+smoker+cpd+HTN+diabetes+chol+DBP+BMI+HR+stroke,
+          data = dataf_tr,
+          family = binomial) 
+# family=binomial selects a Logistic Regression model
+summary(glm.fit) #visualize output of the logistic regression model
+```
+Among all the information given by the summary, for our study we are going to focus on the estimates of our coefficients and their p-values, hence their significance. As a confirmation to what discussed before, the variables `sex`, `age`, `HTN` and `stroke` exhibit a low p-value. A confirmation to the fact that these variables have an higher discriminative power as predictors for CHD. \
+Contrary to initial exploratory analysis, the GLM identified `cpd` (cigarettes per day) as statistically significant (p=0.0157). Notably, variables like `diabetes` and `chol`, while suggestive in visualizations, lacked significance in the model.
+However, proceeding with the summary, the model's overall fit is supported by the reduction in deviance from the null model (1021.22) to the residual deviance (917.51), indicating that including all predictors improves the model's explanatory power, even though not all variables contribute equally to predicting CHD risk.
+
+Let's now compute the accuracy of the model, by getting prediction out of it, with the `predict()` function called over the test set. Then, we can build our confusion matrix (rows=truth, columns=predictions) and compute the number of correct predictions / total observations (the accuracy), or the prediction error.
+
+```{r}
+glm.probs <- predict(glm.fit, data = dataf_ts, type = "response") 
+# type="response" returns predictions in term of probabilities
+
+#glm.probs presents the probability of CHD being "Yes" since No=0 and Yes=1
+contrasts(dataf$CHD) 
+
+```
+```{r}
+# create a "placeholder" filled with as many No values as the number of observations (rows) in dataf
+glm.pred <- rep("No", nrow(dataf_ts)) 
+# replace with Yes values according to the glm.probs threshold, by default is 0.5
+glm.pred[glm.probs > 0.5] <- "Yes" 
+#| tidy: false
+#in this case Yes will be the positive value
+table(glm.pred, CHD_test)
+mean(glm.pred == CHD_test) #accuracy = number of correct hits/total observations
+mean(glm.pred!=  CHD_test) #error rate
+```
+The accuracy of the model is 84%, which, in theory, is a good value. This model could still be improved, since it produces a lot of false negatives and the accuracy in predicting "Yes" is very low.
+
+# Fit K-NN classifier
+In this section we are going to investigate if the performance of the model improves when using a different approach: a K-Nearest Neighbor (KNN) model.\
+In R, the KNN is available through the `knn(train, test, factor_of_true_classification, number_neighbours)` function in the `class` library. However, opposite from `glm()`, you do not fit and predict, but you get the predictions using a single command: `knn()`.
+Firstly, we have to do some pre-processing of the data sets we are going to use. KNN works only with continuous variables, so we are going to do a selection of the predictors used for the analysis.
+
+```{r}
+X_train <- dataf_tr %>% select(age, cpd, chol, DBP, BMI, HR)
+X_test <- dataf_ts %>% select(age, cpd, chol, DBP, BMI, HR)
+#Get CHD for training set
+CHD_train <- dataf_tr$CHD
+```
+
+Now, we can fit our KNN model, by setting a random seed and calling the function `knn()`. The setting of the random seed is needed as a certain level of randomness is involved with KNN, e.g. when there's a tie between classes and the algorithm needs to choose one randomly.
+
+```{r}
+set.seed(1) 
+knn.pred <- knn(X_train, X_test, CHD_train, k=7)
+
+# confusion matrix
+table(knn.pred, CHD_test)
+
+# accuracy
+mean(knn.pred == CHD_test)
+```
+The value k=7 was chosen based off of random trials with different values of the parameter and a more precise evaluation conducted with the elbow method, a technique with which we can select a value for k by looking at the result given by every k.\
+We iterate over a range of i values, here, we iterated from 1 to 30.\
+For each i, we calculate the error rate of the KNN method.
+
+```{r, fig.width=4, fig.height=3.5}
+set.seed(1)
+error_rate <- numeric()
+
+for (i in 1:30){
+ knn.pred <- knn(X_train, X_test, CHD_train, k=i)
+ error_rate <- c(error_rate, mean(knn.pred != CHD_test))
+}
+plot(1:30, error_rate, type = "l", col = "#1A85FF", lty = 2, pch = 16,
+     main = "Error Rate vs. K Value", xlab = "K", ylab = "Error Rate",
+     ylim = c(0.15, max(error_rate) + 0.02))
+grid(lty="solid")
+points(1:30, error_rate, col = "#D41159", pch = 16, cex = 1)
+
+```
+
+Once generated the plot we can observe that the error rate tends to decrease as the number of neighbors increases, reaching the minimum for $k=19$. 
+Despise that, we preferred not to choose such a high value of k as the tuning parameter. In fact, as k increases, the model tends to have a high bias and a low variance, and hence can underfit the data. \
+To reach a good bias/variance trade-off we want to look for the value of k after which the error becomes constant, or barely decreases. In our case this would be 7. \
+As illustrated, the KNN model with k=7 gives us an accuracy of 84.41% which is not an improvement from the logistic regression model of the previous section.
+
+By fitting the model with k=19, we could also note how maximum accuracy for the KNN model, ~85%, is obtained by always predicting "No", except for a single correct positive prediction. For $k\geq21$ the model still has an accuracy of ~85%, but obtained by always predicting "No". This is a direct consequence of the imbalance of our data set with respect to the response variable `CHD`.
+```{r}
+set.seed(1)
+knn.pred <- knn(X_train, X_test, CHD_train, k=21)
+# confusion matrix
+table(knn.pred, CHD_test)
+# accuracy
+mean(knn.pred == CHD_test)
+```
+
+# Conclusion
+In this study we analyzed how to fit two classification methods, Logistic Regression and KNN, to do prediction on  variable of interest, `CHD`, evaluating their performances.
+The two models exhibited very similar accuracies: the majority of tests gave an accuracy of ~84%, with KNN being slightly more imprecise when tuning the parameter k=7 (carefully chosen in the previous section).\
+Given the imbalance of the data set with respect to the response variable, by using KNN the maximum accuracy (85%) was reached by always predicting "No". \
+As a direct consequence, in theory, we could consider the two models to be suitable for predicting the response variable given the predictors. However, while both models achieved similar accuracy (~84%), neither is clinically useful for identifying at-risk patients. The GLM correctly classified only 9 of 425 "Yes" cases (Sensitivity=2.1%), and KNN showed marginally better but still inadequate performance (14 TP). \
+Due to the nature of the question, a model suitable in correctly predicting the occurrence of this disease should be trained in a way that prediliges precision (reliability of positive predictions), since it's more important to have fewer false negatives as possible. Neither of the two models are successful in doing this, since the number of false positives is much higher than the one of true positives in both cases. \
+The main limitation of this study, as we could observe, was the severe class imbalance, which made accuracy misleading, as models could achieve 85% accuracy by simply predicting "No" for all cases.
+Another matter to take into consideration would be the loss of information derived from the omission of the observations presenting Na's (operation which could also introduce biases) and the exclusion of categorical variables when predicting information with KNN.\
+GLM, on the other hand, assumes linear log-odds relationships, missing potential other interaction between variables. Also, its fixed 0.5 threshold is unsuitable for imbalanced data.\
+Lastly, validation relied on a single 70-30 split without cross-validation, risking overfitting.\
+These limitations highlight the need for more sophisticated approaches to handle class imbalance and validate predictive models in future research on CHD risk factors.
+
+
+
